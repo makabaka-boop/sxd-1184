@@ -32,6 +32,12 @@ class TaskPriority(str, enum.Enum):
     LOW = "低"
 
 
+class RiskStatus(str, enum.Enum):
+    NORMAL = "正常"
+    ATTENTION = "需关注"
+    LAGGING = "已滞后"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -146,6 +152,9 @@ class RdTask(Base):
     responsible_id = Column(Integer, ForeignKey("users.id"))
     target_date = Column(DateTime)
     close_reason = Column(Text)
+    risk_status = Column(Enum(RiskStatus), default=RiskStatus.NORMAL, nullable=False)
+    risk_reason = Column(String(500))
+    risk_calculated_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

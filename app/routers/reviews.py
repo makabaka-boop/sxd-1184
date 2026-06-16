@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, auth
 from ..database import get_db
 from ..models import BatchStatus, TaskStage
+from .. import stats_service
 from .batches import _recalc_task_stage_for_batch, _log_batch_status
 
 router = APIRouter(tags=["评审管理"])
@@ -49,6 +50,8 @@ def submit_review(
         round_no=current_round
     )
     db.add(db_review)
+    db.flush()
+    stats_service.recalc_task_risk_for_batch(db, review.batch_id)
     db.commit()
     db.refresh(db_review)
     return db_review
@@ -186,6 +189,7 @@ def submit_adjustment(
         db.flush()
         _recalc_task_stage_for_batch(db, batch_id)
 
+    stats_service.recalc_task_risk_for_batch(db, batch_id)
     db.commit()
     db.refresh(db_adj)
     return db_adj

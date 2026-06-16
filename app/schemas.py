@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field
-from .models import BatchStatus, TaskStage, TaskPriority
+from .models import BatchStatus, TaskStage, TaskPriority, RiskStatus
 
 
 class Token(BaseModel):
@@ -251,6 +251,9 @@ class RdTaskResponse(RdTaskBase):
     created_at: datetime
     updated_at: datetime
     is_overdue: bool = False
+    risk_status: RiskStatus = RiskStatus.NORMAL
+    risk_reason: Optional[str] = None
+    risk_calculated_at: Optional[datetime] = None
     ingredient_group: Optional[IngredientGroupResponse] = None
     recipe: Optional[RecipeResponse] = None
     responsible_person: Optional[UserResponse] = None
@@ -281,3 +284,18 @@ class ResponsibleLoadItem(BaseModel):
     total: int
     pending: int
     overdue: int
+
+
+class RiskStatsItem(BaseModel):
+    category: str
+    category_value: str
+    normal_count: int
+    attention_count: int
+    lagging_count: int
+    total_count: int
+
+
+class RiskStatsOverview(BaseModel):
+    by_responsible: List[RiskStatsItem]
+    by_stage: List[RiskStatsItem]
+    by_priority: List[RiskStatsItem]

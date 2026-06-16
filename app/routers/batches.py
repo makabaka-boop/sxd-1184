@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, auth
 from ..database import get_db
 from ..models import BatchStatus, TaskStage
+from .. import stats_service
 
 router = APIRouter(prefix="/batches", tags=["试配批次"])
 
@@ -247,6 +248,7 @@ def start_review_round(
     _log_batch_status(db, batch_id, old_status, BatchStatus.REVIEWING, current_user.id)
     db.flush()
     _recalc_task_stage_for_batch(db, batch_id)
+    stats_service.recalc_task_risk_for_batch(db, batch_id)
     db.commit()
     db.refresh(batch)
     return batch
@@ -273,6 +275,7 @@ def finish_trial(
     _log_batch_status(db, batch_id, old_status, BatchStatus.PENDING_REVIEW, current_user.id)
     db.flush()
     _recalc_task_stage_for_batch(db, batch_id)
+    stats_service.recalc_task_risk_for_batch(db, batch_id)
     db.commit()
     db.refresh(batch)
     return batch
@@ -298,6 +301,7 @@ def finalize_batch(
     _log_batch_status(db, batch_id, old_status, BatchStatus.FINALIZED, current_user.id)
     db.flush()
     _recalc_task_stage_for_batch(db, batch_id)
+    stats_service.recalc_task_risk_for_batch(db, batch_id)
     db.commit()
     db.refresh(batch)
     return batch
@@ -323,6 +327,7 @@ def terminate_batch(
     _log_batch_status(db, batch_id, old_status, BatchStatus.TERMINATED, current_user.id)
     db.flush()
     _recalc_task_stage_for_batch(db, batch_id)
+    stats_service.recalc_task_risk_for_batch(db, batch_id)
     db.commit()
     db.refresh(batch)
     return batch

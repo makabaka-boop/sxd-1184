@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, and_
 from .. import models, schemas, auth
 from ..database import get_db
-from ..models import TaskStage, TaskPriority, BatchStatus
+from ..models import TaskStage, TaskPriority, BatchStatus, RiskStatus
+from .. import stats_service
 from .batches import _recalc_task_stage_for_batch
 
 router = APIRouter(prefix="/rd-tasks", tags=["研发任务看板"])
@@ -41,6 +42,9 @@ def _enrich_task(task: models.RdTask, db: Session) -> schemas.RdTaskResponse:
         created_at=task.created_at,
         updated_at=task.updated_at,
         is_overdue=is_overdue,
+        risk_status=task.risk_status,
+        risk_reason=task.risk_reason,
+        risk_calculated_at=task.risk_calculated_at,
         ingredient_group=task.ingredient_group,
         recipe=task.recipe,
         responsible_person=task.responsible_person,
@@ -95,6 +99,7 @@ def create_rd_task(
     for bid in batch_ids:
         _recalc_task_stage_for_batch(db, bid)
 
+    stats_service.update_task_risk(db, db_task.id)
     db.commit()
     db.refresh(db_task)
 
@@ -119,6 +124,7 @@ def list_rd_tasks(
     ingredient_group_id: Optional[int] = None,
     is_overdue: Optional[bool] = None,
     is_closed: Optional[bool] = None,
+    risk_status: Optional[RiskStatus] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_active_user),
 ):
@@ -139,6 +145,8 @@ def list_rd_tasks(
         query = query.filter(models.RdTask.recipe_id == recipe_id)
     if ingredient_group_id is not None:
         query = query.filter(models.RdTask.ingredient_group_id == ingredient_group_id)
+    if risk_status is not None:
+        query = query.filter(models.RdTask.risk_status == risk_status)
 
     if is_closed is not None:
         if is_closed:
@@ -348,6 +356,7 @@ def update_rd_task(
     for key, value in update_data.items():
         setattr(task, key, value)
 
+    stats_service.update_task_risk(db, task_id)
     db.commit()
     db.refresh(task)
 
@@ -359,6 +368,39 @@ def update_rd_task(
     ).filter(models.RdTask.id == task_id).first()
 
     return _enrich_task(refreshed, db)
+
+
+@router.post("/{task_id}/refresh-risk", response_model=schemas.RdTaskResponse)
+def refresh_task_risk(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user),
+):
+    task = db.query(models.RdTask).filter(models.RdTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="研发任务不存在")
+
+    stats_service.update_task_risk(db, task_id)
+    db.commit()
+
+    refreshed = db.query(models.RdTask).options(
+        joinedload(models.RdTask.ingredient_group),
+        joinedload(models.RdTask.recipe),
+        joinedload(models.RdTask.responsible_person),
+        joinedload(models.RdTask.task_batches).joinedload(models.RdTaskBatch.batch),
+    ).filter(models.RdTask.id == task_id).first()
+
+    return _enrich_task(refreshed, db)
+
+
+@router.post("/refresh-all-risk")
+def refresh_all_tasks_risk(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user),
+):
+    stats_service.recalc_all_tasks_risk(db)
+    db.commit()
+    return {"message": "所有任务风险状态已刷新"}
 
 
 @router.delete("/{task_id}")
@@ -402,6 +444,7 @@ def link_batch_to_task(
     db.add(tb)
     db.flush()
     _recalc_task_stage_for_batch(db, batch_id)
+    stats_service.update_task_risk(db, task_id)
     db.commit()
 
     refreshed = db.query(models.RdTask).options(
@@ -429,6 +472,8 @@ def unlink_batch_from_task(
         raise HTTPException(status_code=404, detail="关联关系不存在")
 
     db.delete(tb)
+    db.flush()
+    stats_service.update_task_risk(db, task_id)
     db.commit()
 
     refreshed = db.query(models.RdTask).options(
@@ -439,3 +484,36 @@ def unlink_batch_from_task(
     ).filter(models.RdTask.id == task_id).first()
 
     return _enrich_task(refreshed, db)
+
+
+@router.post("/{task_id}/refresh-risk", response_model=schemas.RdTaskResponse)
+def refresh_task_risk(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user),
+):
+    task = db.query(models.RdTask).filter(models.RdTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="研发任务不存在")
+
+    stats_service.update_task_risk(db, task_id)
+    db.commit()
+
+    refreshed = db.query(models.RdTask).options(
+        joinedload(models.RdTask.ingredient_group),
+        joinedload(models.RdTask.recipe),
+        joinedload(models.RdTask.responsible_person),
+        joinedload(models.RdTask.task_batches).joinedload(models.RdTaskBatch.batch),
+    ).filter(models.RdTask.id == task_id).first()
+
+    return _enrich_task(refreshed, db)
+
+
+@router.post("/refresh-all-risk")
+def refresh_all_tasks_risk(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user),
+):
+    stats_service.recalc_all_tasks_risk(db)
+    db.commit()
+    return {"message": "所有任务风险状态已刷新"}

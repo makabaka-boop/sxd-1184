@@ -98,3 +98,35 @@ def get_responsible_load(
     current_user: models.User = Depends(auth.get_current_active_user)
 ):
     return stats_service.get_responsible_load(db)
+
+
+@router.get("/tasks/risk-overview", response_model=schemas.RiskStatsOverview)
+def get_risk_stats_overview(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    return stats_service.get_risk_stats_overview(db)
+
+
+@router.get("/tasks/risk-by-responsible", response_model=List[schemas.RiskStatsItem])
+def get_risk_stats_by_responsible(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    return stats_service.get_risk_stats_by_responsible(db)
+
+
+@router.get("/tasks/risk-by-stage", response_model=List[schemas.RiskStatsItem])
+def get_risk_stats_by_stage(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    return stats_service.get_risk_stats_by_stage(db)
+
+
+@router.get("/tasks/risk-by-priority", response_model=List[schemas.RiskStatsItem])
+def get_risk_stats_by_priority(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    return stats_service.get_risk_stats_by_priority(db)

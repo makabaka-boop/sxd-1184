@@ -1,8 +1,9 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
 from . import models
-from .models import BatchStatus, TaskStage, TaskPriority
+from .models import BatchStatus, TaskStage, TaskPriority, RiskStatus
 import statistics
 
 
@@ -303,3 +304,239 @@ def get_responsible_load(db: Session) -> List[dict]:
                 load_map[rid]["overdue"] += 1
 
     return list(load_map.values())
+
+
+def _get_valid_review_count(db: Session, batch: models.Batch) -> int:
+    return db.query(models.Review).filter(
+        models.Review.batch_id == batch.id,
+        models.Review.round_no == batch.round_no,
+        models.Review.is_valid == True
+    ).count()
+
+
+def _get_review_std(db: Session, batch: models.Batch) -> float:
+    reviews = db.query(models.Review).filter(
+        models.Review.batch_id == batch.id,
+        models.Review.round_no == batch.round_no,
+        models.Review.is_valid == True
+    ).all()
+    if len(reviews) < 2:
+        return 0.0
+    scores = [calc_avg_score(r) for r in reviews]
+    return statistics.stdev(scores)
+
+
+def _get_days_in_status(db: Session, batch: models.Batch) -> int:
+    last_log = db.query(models.BatchStatusLog).filter(
+        models.BatchStatusLog.batch_id == batch.id,
+        models.BatchStatusLog.to_status == batch.status
+    ).order_by(models.BatchStatusLog.created_at.desc()).first()
+    if not last_log:
+        return 0
+    delta = datetime.utcnow() - last_log.created_at
+    return delta.days
+
+
+def _has_scheduled_next_round(db: Session, batch: models.Batch) -> bool:
+    last_adj = db.query(models.AdjustmentRecord).filter(
+        models.AdjustmentRecord.batch_id == batch.id
+    ).order_by(models.AdjustmentRecord.adjusted_at.desc()).first()
+    return last_adj is not None and last_adj.next_round_scheduled
+
+
+def calculate_task_risk(db: Session, task: models.RdTask) -> Tuple[RiskStatus, str]:
+    if task.stage in [TaskStage.FINALIZED, TaskStage.CLOSED]:
+        return RiskStatus.NORMAL, "任务已完成/关闭"
+
+    now = datetime.utcnow()
+    lagging_reasons = []
+    attention_reasons = []
+
+    if task.target_date and task.target_date < now:
+        lagging_reasons.append(f"任务已超过目标完成日期 {(now - task.target_date).days} 天")
+
+    linked_batch_ids = [tb.batch_id for tb in task.task_batches]
+    if not linked_batch_ids:
+        if task.target_date and (task.target_date - now).days <= 7:
+            attention_reasons.append("任务临近目标日期但尚未关联批次")
+        else:
+            attention_reasons.append("任务尚未关联批次")
+    else:
+        batches = db.query(models.Batch).filter(
+            models.Batch.id.in_(linked_batch_ids)
+        ).all()
+
+        for batch in batches:
+            if batch.status in [BatchStatus.FINALIZED, BatchStatus.TERMINATED]:
+                continue
+
+            days_in_status = _get_days_in_status(db, batch)
+
+            if batch.status == BatchStatus.NEED_ADJUST:
+                has_scheduled = _has_scheduled_next_round(db, batch)
+                if not has_scheduled:
+                    if days_in_status > 3:
+                        lagging_reasons.append(
+                            f"批次 {batch.batch_no} 调整后超过{days_in_status}天未安排下一轮"
+                        )
+                    else:
+                        attention_reasons.append(
+                            f"批次 {batch.batch_no} 已提交调整尚未安排下一轮"
+                        )
+
+            if batch.status == BatchStatus.REVIEWING:
+                valid_count = _get_valid_review_count(db, batch)
+                if valid_count < 3:
+                    if days_in_status > 5:
+                        lagging_reasons.append(
+                            f"批次 {batch.batch_no} 评审中超过{days_in_status}天，有效评审仅{valid_count}人"
+                        )
+                    else:
+                        attention_reasons.append(
+                            f"批次 {batch.batch_no} 当前轮有效评审仅{valid_count}人，不足3人"
+                        )
+
+                if valid_count >= 3:
+                    std = _get_review_std(db, batch)
+                    if std > 1.5:
+                        attention_reasons.append(
+                            f"批次 {batch.batch_no} 评分离散度 {std:.2f}，超过阈值1.5"
+                        )
+
+            if batch.status == BatchStatus.PENDING_REVIEW and days_in_status > 5:
+                attention_reasons.append(
+                    f"批次 {batch.batch_no} 待评审超过{days_in_status}天未启动"
+                )
+
+    if task.target_date and task.target_date >= now:
+        days_to_target = (task.target_date - now).days
+        if days_to_target <= 7:
+            attention_reasons.append(f"距离目标完成日期仅剩 {days_to_target} 天")
+
+    if lagging_reasons:
+        return RiskStatus.LAGGING, "；".join(lagging_reasons)
+    elif attention_reasons:
+        return RiskStatus.ATTENTION, "；".join(attention_reasons)
+    else:
+        return RiskStatus.NORMAL, "进度正常"
+
+
+def update_task_risk(db: Session, task_id: int) -> None:
+    task = db.query(models.RdTask).filter(models.RdTask.id == task_id).first()
+    if not task:
+        return
+    risk_status, risk_reason = calculate_task_risk(db, task)
+    task.risk_status = risk_status
+    task.risk_reason = risk_reason
+    task.risk_calculated_at = datetime.utcnow()
+
+
+def recalc_task_risk_for_batch(db: Session, batch_id: int) -> None:
+    task_links = db.query(models.RdTaskBatch).filter(
+        models.RdTaskBatch.batch_id == batch_id
+    ).all()
+    for tl in task_links:
+        update_task_risk(db, tl.task_id)
+
+
+def recalc_all_tasks_risk(db: Session) -> None:
+    tasks = db.query(models.RdTask).all()
+    for task in tasks:
+        update_task_risk(db, task.id)
+
+
+def get_risk_stats_by_responsible(db: Session) -> List[dict]:
+    all_tasks = db.query(models.RdTask).all()
+    result_map = {}
+
+    for task in all_tasks:
+        rid = task.responsible_id
+        if rid is None:
+            key = "未分配"
+            name = "未分配"
+        else:
+            key = str(rid)
+            user = db.query(models.User).filter(models.User.id == rid).first()
+            name = user.full_name if user else f"用户{rid}"
+
+        if key not in result_map:
+            result_map[key] = {
+                "category": "负责人",
+                "category_value": name,
+                "normal_count": 0,
+                "attention_count": 0,
+                "lagging_count": 0,
+                "total_count": 0,
+            }
+
+        result_map[key]["total_count"] += 1
+        if task.risk_status == RiskStatus.NORMAL:
+            result_map[key]["normal_count"] += 1
+        elif task.risk_status == RiskStatus.ATTENTION:
+            result_map[key]["attention_count"] += 1
+        elif task.risk_status == RiskStatus.LAGGING:
+            result_map[key]["lagging_count"] += 1
+
+    return list(result_map.values())
+
+
+def get_risk_stats_by_stage(db: Session) -> List[dict]:
+    all_tasks = db.query(models.RdTask).all()
+    result_map = {}
+
+    for task in all_tasks:
+        stage_value = task.stage.value
+        if stage_value not in result_map:
+            result_map[stage_value] = {
+                "category": "任务阶段",
+                "category_value": stage_value,
+                "normal_count": 0,
+                "attention_count": 0,
+                "lagging_count": 0,
+                "total_count": 0,
+            }
+
+        result_map[stage_value]["total_count"] += 1
+        if task.risk_status == RiskStatus.NORMAL:
+            result_map[stage_value]["normal_count"] += 1
+        elif task.risk_status == RiskStatus.ATTENTION:
+            result_map[stage_value]["attention_count"] += 1
+        elif task.risk_status == RiskStatus.LAGGING:
+            result_map[stage_value]["lagging_count"] += 1
+
+    return list(result_map.values())
+
+
+def get_risk_stats_by_priority(db: Session) -> List[dict]:
+    all_tasks = db.query(models.RdTask).all()
+    result_map = {}
+
+    for task in all_tasks:
+        priority_value = task.priority.value
+        if priority_value not in result_map:
+            result_map[priority_value] = {
+                "category": "优先级",
+                "category_value": priority_value,
+                "normal_count": 0,
+                "attention_count": 0,
+                "lagging_count": 0,
+                "total_count": 0,
+            }
+
+        result_map[priority_value]["total_count"] += 1
+        if task.risk_status == RiskStatus.NORMAL:
+            result_map[priority_value]["normal_count"] += 1
+        elif task.risk_status == RiskStatus.ATTENTION:
+            result_map[priority_value]["attention_count"] += 1
+        elif task.risk_status == RiskStatus.LAGGING:
+            result_map[priority_value]["lagging_count"] += 1
+
+    return list(result_map.values())
+
+
+def get_risk_stats_overview(db: Session) -> dict:
+    return {
+        "by_responsible": get_risk_stats_by_responsible(db),
+        "by_stage": get_risk_stats_by_stage(db),
+        "by_priority": get_risk_stats_by_priority(db),
+    }
