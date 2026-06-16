@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, auth
 from ..database import get_db
 from ..models import BatchStatus, TaskStage
+from .batches import _recalc_task_stage_for_batch, _log_batch_status
 
 router = APIRouter(tags=["评审管理"])
 
@@ -179,14 +180,11 @@ def submit_adjustment(
     db.add(db_adj)
 
     if batch.status == BatchStatus.REVIEWING:
+        old_status = batch.status
         batch.status = BatchStatus.NEED_ADJUST
-        task_links = db.query(models.RdTaskBatch).filter(
-            models.RdTaskBatch.batch_id == batch_id
-        ).all()
-        for tl in task_links:
-            task = db.query(models.RdTask).filter(models.RdTask.id == tl.task_id).first()
-            if task and task.stage not in [TaskStage.FINALIZED, TaskStage.CLOSED]:
-                task.stage = TaskStage.ADJUSTING
+        _log_batch_status(db, batch_id, old_status, BatchStatus.NEED_ADJUST, current_user.id)
+        db.flush()
+        _recalc_task_stage_for_batch(db, batch_id)
 
     db.commit()
     db.refresh(db_adj)

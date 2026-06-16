@@ -17,30 +17,69 @@ BATCH_STATUS_TO_TASK_STAGE = {
     BatchStatus.FINALIZED: TaskStage.FINALIZED,
 }
 
+STAGE_ORDER = [
+    TaskStage.INITIATED,
+    TaskStage.TRIAL,
+    TaskStage.REVIEWING,
+    TaskStage.ADJUSTING,
+    TaskStage.FINALIZED,
+]
 
-def _sync_task_stage_for_batch(db: Session, batch_id: int, batch_status: BatchStatus):
-    new_stage = BATCH_STATUS_TO_TASK_STAGE.get(batch_status)
-    if new_stage is None:
-        return
 
+def _log_batch_status(db: Session, batch_id: int, from_status: BatchStatus, to_status: BatchStatus, operator_id: int = None):
+    log = models.BatchStatusLog(
+        batch_id=batch_id,
+        from_status=from_status,
+        to_status=to_status,
+        operator_id=operator_id,
+    )
+    db.add(log)
+
+
+def _recalc_task_stage_for_batch(db: Session, batch_id: int):
     task_links = db.query(models.RdTaskBatch).filter(
         models.RdTaskBatch.batch_id == batch_id
     ).all()
 
     for tl in task_links:
         task = db.query(models.RdTask).filter(models.RdTask.id == tl.task_id).first()
-        if task and task.stage not in [TaskStage.FINALIZED, TaskStage.CLOSED]:
-            stage_order = [
-                TaskStage.INITIATED,
-                TaskStage.TRIAL,
-                TaskStage.REVIEWING,
-                TaskStage.ADJUSTING,
-                TaskStage.FINALIZED,
+        if not task or task.stage in [TaskStage.FINALIZED, TaskStage.CLOSED]:
+            continue
+
+        all_links = db.query(models.RdTaskBatch).filter(
+            models.RdTaskBatch.task_id == task.id
+        ).all()
+
+        linked_batch_ids = [l.batch_id for l in all_links]
+        linked_batches = db.query(models.Batch).filter(
+            models.Batch.id.in_(linked_batch_ids)
+        ).all()
+
+        all_finalized_or_terminated = all(
+            b.status in [BatchStatus.FINALIZED, BatchStatus.TERMINATED]
+            for b in linked_batches
+        )
+
+        if all_finalized_or_terminated and linked_batches:
+            any_finalized = any(b.status == BatchStatus.FINALIZED for b in linked_batches)
+            task.stage = TaskStage.FINALIZED if any_finalized else TaskStage.CLOSED
+        else:
+            active_batches = [
+                b for b in linked_batches
+                if b.status not in [BatchStatus.FINALIZED, BatchStatus.TERMINATED]
             ]
-            current_idx = stage_order.index(task.stage) if task.stage in stage_order else -1
-            new_idx = stage_order.index(new_stage) if new_stage in stage_order else -1
-            if new_idx > current_idx:
-                task.stage = new_stage
+            max_stage_idx = -1
+            for b in active_batches:
+                mapped = BATCH_STATUS_TO_TASK_STAGE.get(b.status)
+                if mapped and mapped in STAGE_ORDER:
+                    idx = STAGE_ORDER.index(mapped)
+                    if idx > max_stage_idx:
+                        max_stage_idx = idx
+
+            if max_stage_idx >= 0:
+                current_idx = STAGE_ORDER.index(task.stage) if task.stage in STAGE_ORDER else -1
+                if max_stage_idx > current_idx:
+                    task.stage = STAGE_ORDER[max_stage_idx]
 
 
 @router.post("/", response_model=schemas.BatchResponse)
@@ -203,8 +242,11 @@ def start_review_round(
     if batch.status == BatchStatus.NEED_ADJUST:
         batch.round_no += 1
 
+    old_status = batch.status
     batch.status = BatchStatus.REVIEWING
-    _sync_task_stage_for_batch(db, batch_id, BatchStatus.REVIEWING)
+    _log_batch_status(db, batch_id, old_status, BatchStatus.REVIEWING, current_user.id)
+    db.flush()
+    _recalc_task_stage_for_batch(db, batch_id)
     db.commit()
     db.refresh(batch)
     return batch
@@ -225,9 +267,12 @@ def finish_trial(
     if batch.status != BatchStatus.PENDING_TRIAL:
         raise HTTPException(status_code=400, detail=f"当前状态 {batch.status.value} 不可操作")
 
+    old_status = batch.status
     batch.status = BatchStatus.PENDING_REVIEW
     batch.trial_date = datetime.utcnow()
-    _sync_task_stage_for_batch(db, batch_id, BatchStatus.PENDING_REVIEW)
+    _log_batch_status(db, batch_id, old_status, BatchStatus.PENDING_REVIEW, current_user.id)
+    db.flush()
+    _recalc_task_stage_for_batch(db, batch_id)
     db.commit()
     db.refresh(batch)
     return batch
@@ -248,8 +293,11 @@ def finalize_batch(
     if batch.status != BatchStatus.REVIEWING:
         raise HTTPException(status_code=400, detail=f"当前状态 {batch.status.value} 不可定版")
 
+    old_status = batch.status
     batch.status = BatchStatus.FINALIZED
-    _sync_task_stage_for_batch(db, batch_id, BatchStatus.FINALIZED)
+    _log_batch_status(db, batch_id, old_status, BatchStatus.FINALIZED, current_user.id)
+    db.flush()
+    _recalc_task_stage_for_batch(db, batch_id)
     db.commit()
     db.refresh(batch)
     return batch
@@ -270,7 +318,11 @@ def terminate_batch(
     if batch.status in [BatchStatus.FINALIZED, BatchStatus.TERMINATED]:
         raise HTTPException(status_code=400, detail=f"当前状态 {batch.status.value} 不可终止")
 
+    old_status = batch.status
     batch.status = BatchStatus.TERMINATED
+    _log_batch_status(db, batch_id, old_status, BatchStatus.TERMINATED, current_user.id)
+    db.flush()
+    _recalc_task_stage_for_batch(db, batch_id)
     db.commit()
     db.refresh(batch)
     return batch

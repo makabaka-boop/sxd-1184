@@ -195,6 +195,18 @@ class AnomalyDetectionResult(BaseModel):
     related_ids: Optional[List[int]] = None
 
 
+class BatchStatusLogResponse(BaseModel):
+    id: int
+    batch_id: int
+    from_status: Optional[BatchStatus] = None
+    to_status: BatchStatus
+    operator_id: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class RdTaskBase(BaseModel):
     title: str
     description: Optional[str] = None

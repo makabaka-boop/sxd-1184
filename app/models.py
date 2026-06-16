@@ -164,3 +164,16 @@ class RdTaskBatch(Base):
 
     task = relationship("RdTask", back_populates="task_batches")
     batch = relationship("Batch")
+
+
+class BatchStatusLog(Base):
+    __tablename__ = "batch_status_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    batch_id = Column(Integer, ForeignKey("batches.id"), nullable=False)
+    from_status = Column(Enum(BatchStatus), nullable=True)
+    to_status = Column(Enum(BatchStatus), nullable=False)
+    operator_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    batch = relationship("Batch")

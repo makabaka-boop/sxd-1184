@@ -2,9 +2,11 @@ from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import or_, and_
 from .. import models, schemas, auth
 from ..database import get_db
 from ..models import TaskStage, TaskPriority, BatchStatus
+from .batches import _recalc_task_stage_for_batch
 
 router = APIRouter(prefix="/rd-tasks", tags=["研发任务看板"])
 
@@ -88,6 +90,11 @@ def create_rd_task(
         tb = models.RdTaskBatch(task_id=db_task.id, batch_id=bid)
         db.add(tb)
 
+    db.flush()
+
+    for bid in batch_ids:
+        _recalc_task_stage_for_batch(db, bid)
+
     db.commit()
     db.refresh(db_task)
 
@@ -139,12 +146,19 @@ def list_rd_tasks(
         else:
             query = query.filter(models.RdTask.stage.notin_([TaskStage.FINALIZED, TaskStage.CLOSED]))
 
-    if is_overdue is not None and is_overdue:
-        query = query.filter(
-            models.RdTask.target_date.isnot(None),
-            models.RdTask.target_date < datetime.utcnow(),
-            models.RdTask.stage.notin_([TaskStage.FINALIZED, TaskStage.CLOSED]),
-        )
+    if is_overdue is not None:
+        if is_overdue:
+            query = query.filter(
+                models.RdTask.target_date.isnot(None),
+                models.RdTask.target_date < datetime.utcnow(),
+                models.RdTask.stage.notin_([TaskStage.FINALIZED, TaskStage.CLOSED]),
+            )
+        else:
+            query = query.filter(or_(
+                models.RdTask.target_date.is_(None),
+                models.RdTask.target_date >= datetime.utcnow(),
+                models.RdTask.stage.in_([TaskStage.FINALIZED, TaskStage.CLOSED]),
+            ))
 
     tasks = query.order_by(models.RdTask.created_at.desc()).offset(skip).limit(limit).all()
     return [_enrich_task(t, db) for t in tasks]
@@ -181,12 +195,25 @@ def get_rd_task_detail(
         ).all()
 
         for batch in batches:
+            logs = db.query(models.BatchStatusLog).filter(
+                models.BatchStatusLog.batch_id == batch.id
+            ).order_by(models.BatchStatusLog.created_at.asc()).all()
+
+            transitions = []
+            for log in logs:
+                transitions.append({
+                    "from_status": log.from_status.value if log.from_status else None,
+                    "to_status": log.to_status.value,
+                    "operator_id": log.operator_id,
+                    "changed_at": log.created_at.isoformat() if log.created_at else None,
+                })
+
             batch_status_transitions.append({
                 "batch_id": batch.id,
                 "batch_no": batch.batch_no,
-                "status": batch.status.value,
+                "current_status": batch.status.value,
                 "round_no": batch.round_no,
-                "updated_at": batch.updated_at.isoformat() if batch.updated_at else None,
+                "transitions": transitions,
             })
 
         active_batches = [b for b in batches if b.status == BatchStatus.REVIEWING]
@@ -373,6 +400,8 @@ def link_batch_to_task(
 
     tb = models.RdTaskBatch(task_id=task_id, batch_id=batch_id)
     db.add(tb)
+    db.flush()
+    _recalc_task_stage_for_batch(db, batch_id)
     db.commit()
 
     refreshed = db.query(models.RdTask).options(
