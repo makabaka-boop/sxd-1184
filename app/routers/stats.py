@@ -2,7 +2,7 @@ from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from .. import models, auth
+from .. import models, schemas, auth
 from ..database import get_db
 from .. import stats_service
 
@@ -82,3 +82,19 @@ def detect_ingredient_group_defects(
     current_user: models.User = Depends(auth.get_current_active_user)
 ):
     return stats_service.detect_ingredient_group_defects(db, threshold)
+
+
+@router.get("/tasks/overview", response_model=schemas.TaskStatsOverview)
+def get_task_stats_overview(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    return stats_service.get_task_stats_overview(db)
+
+
+@router.get("/tasks/responsible-load", response_model=List[schemas.ResponsibleLoadItem])
+def get_responsible_load(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    return stats_service.get_responsible_load(db)

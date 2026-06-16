@@ -2,7 +2,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
 from . import models
-from .models import BatchStatus
+from .models import BatchStatus, TaskStage, TaskPriority
 import statistics
 
 
@@ -239,3 +239,67 @@ def detect_all_anomalies(db: Session) -> List[dict]:
     anomalies.extend(detect_missing_next_round(db))
     anomalies.extend(detect_ingredient_group_defects(db))
     return anomalies
+
+
+def get_task_stats_overview(db: Session) -> dict:
+    from datetime import datetime
+
+    all_tasks = db.query(models.RdTask).all()
+    total = len(all_tasks)
+
+    closed_stages = [TaskStage.FINALIZED, TaskStage.CLOSED]
+    pending_tasks = [t for t in all_tasks if t.stage not in closed_stages]
+    pending = len(pending_tasks)
+
+    overdue = len([
+        t for t in pending_tasks
+        if t.target_date and t.target_date < datetime.utcnow()
+    ])
+
+    by_stage = {}
+    for t in all_tasks:
+        key = t.stage.value
+        by_stage[key] = by_stage.get(key, 0) + 1
+
+    by_priority = {}
+    for t in all_tasks:
+        key = t.priority.value
+        by_priority[key] = by_priority.get(key, 0) + 1
+
+    return {
+        "total": total,
+        "pending": pending,
+        "overdue": overdue,
+        "by_stage": by_stage,
+        "by_priority": by_priority,
+    }
+
+
+def get_responsible_load(db: Session) -> List[dict]:
+    from datetime import datetime
+
+    closed_stages = [TaskStage.FINALIZED, TaskStage.CLOSED]
+
+    all_tasks = db.query(models.RdTask).all()
+
+    load_map = {}
+    for t in all_tasks:
+        rid = t.responsible_id
+        if rid is None:
+            continue
+        if rid not in load_map:
+            user = db.query(models.User).filter(models.User.id == rid).first()
+            load_map[rid] = {
+                "responsible_id": rid,
+                "responsible_name": user.full_name if user else None,
+                "total": 0,
+                "pending": 0,
+                "overdue": 0,
+            }
+        load_map[rid]["total"] += 1
+        if t.stage not in closed_stages:
+            load_map[rid]["pending"] += 1
+            if t.target_date and t.target_date < datetime.utcnow():
+                load_map[rid]["overdue"] += 1
+
+    return list(load_map.values())

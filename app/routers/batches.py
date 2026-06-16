@@ -4,9 +4,43 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from .. import models, schemas, auth
 from ..database import get_db
-from ..models import BatchStatus
+from ..models import BatchStatus, TaskStage
 
 router = APIRouter(prefix="/batches", tags=["试配批次"])
+
+
+BATCH_STATUS_TO_TASK_STAGE = {
+    BatchStatus.PENDING_TRIAL: TaskStage.TRIAL,
+    BatchStatus.PENDING_REVIEW: TaskStage.TRIAL,
+    BatchStatus.REVIEWING: TaskStage.REVIEWING,
+    BatchStatus.NEED_ADJUST: TaskStage.ADJUSTING,
+    BatchStatus.FINALIZED: TaskStage.FINALIZED,
+}
+
+
+def _sync_task_stage_for_batch(db: Session, batch_id: int, batch_status: BatchStatus):
+    new_stage = BATCH_STATUS_TO_TASK_STAGE.get(batch_status)
+    if new_stage is None:
+        return
+
+    task_links = db.query(models.RdTaskBatch).filter(
+        models.RdTaskBatch.batch_id == batch_id
+    ).all()
+
+    for tl in task_links:
+        task = db.query(models.RdTask).filter(models.RdTask.id == tl.task_id).first()
+        if task and task.stage not in [TaskStage.FINALIZED, TaskStage.CLOSED]:
+            stage_order = [
+                TaskStage.INITIATED,
+                TaskStage.TRIAL,
+                TaskStage.REVIEWING,
+                TaskStage.ADJUSTING,
+                TaskStage.FINALIZED,
+            ]
+            current_idx = stage_order.index(task.stage) if task.stage in stage_order else -1
+            new_idx = stage_order.index(new_stage) if new_stage in stage_order else -1
+            if new_idx > current_idx:
+                task.stage = new_stage
 
 
 @router.post("/", response_model=schemas.BatchResponse)
@@ -170,6 +204,7 @@ def start_review_round(
         batch.round_no += 1
 
     batch.status = BatchStatus.REVIEWING
+    _sync_task_stage_for_batch(db, batch_id, BatchStatus.REVIEWING)
     db.commit()
     db.refresh(batch)
     return batch
@@ -192,6 +227,7 @@ def finish_trial(
 
     batch.status = BatchStatus.PENDING_REVIEW
     batch.trial_date = datetime.utcnow()
+    _sync_task_stage_for_batch(db, batch_id, BatchStatus.PENDING_REVIEW)
     db.commit()
     db.refresh(batch)
     return batch
@@ -213,6 +249,7 @@ def finalize_batch(
         raise HTTPException(status_code=400, detail=f"当前状态 {batch.status.value} 不可定版")
 
     batch.status = BatchStatus.FINALIZED
+    _sync_task_stage_for_batch(db, batch_id, BatchStatus.FINALIZED)
     db.commit()
     db.refresh(batch)
     return batch

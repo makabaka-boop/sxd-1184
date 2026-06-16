@@ -17,6 +17,21 @@ class BatchStatus(str, enum.Enum):
     TERMINATED = "已终止"
 
 
+class TaskStage(str, enum.Enum):
+    INITIATED = "立项"
+    TRIAL = "试配中"
+    REVIEWING = "评审中"
+    ADJUSTING = "调整中"
+    FINALIZED = "定版"
+    CLOSED = "已关闭"
+
+
+class TaskPriority(str, enum.Enum):
+    HIGH = "高"
+    MEDIUM = "中"
+    LOW = "低"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -116,3 +131,36 @@ class AdjustmentRecord(Base):
     next_round_scheduled = Column(Boolean, default=False)
 
     batch = relationship("Batch", back_populates="adjustments")
+
+
+class RdTask(Base):
+    __tablename__ = "rd_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(200), nullable=False)
+    description = Column(Text)
+    priority = Column(Enum(TaskPriority), default=TaskPriority.MEDIUM, nullable=False)
+    stage = Column(Enum(TaskStage), default=TaskStage.INITIATED, nullable=False)
+    ingredient_group_id = Column(Integer, ForeignKey("ingredient_groups.id"))
+    recipe_id = Column(Integer, ForeignKey("recipes.id"))
+    responsible_id = Column(Integer, ForeignKey("users.id"))
+    target_date = Column(DateTime)
+    close_reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    ingredient_group = relationship("IngredientGroup")
+    recipe = relationship("Recipe")
+    responsible_person = relationship("User", foreign_keys=[responsible_id])
+    task_batches = relationship("RdTaskBatch", back_populates="task", cascade="all, delete-orphan")
+
+
+class RdTaskBatch(Base):
+    __tablename__ = "rd_task_batches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("rd_tasks.id"), nullable=False)
+    batch_id = Column(Integer, ForeignKey("batches.id"), nullable=False)
+
+    task = relationship("RdTask", back_populates="task_batches")
+    batch = relationship("Batch")

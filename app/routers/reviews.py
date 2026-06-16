@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from .. import models, schemas, auth
 from ..database import get_db
-from ..models import BatchStatus
+from ..models import BatchStatus, TaskStage
 
 router = APIRouter(tags=["评审管理"])
 
@@ -180,6 +180,13 @@ def submit_adjustment(
 
     if batch.status == BatchStatus.REVIEWING:
         batch.status = BatchStatus.NEED_ADJUST
+        task_links = db.query(models.RdTaskBatch).filter(
+            models.RdTaskBatch.batch_id == batch_id
+        ).all()
+        for tl in task_links:
+            task = db.query(models.RdTask).filter(models.RdTask.id == tl.task_id).first()
+            if task and task.stage not in [TaskStage.FINALIZED, TaskStage.CLOSED]:
+                task.stage = TaskStage.ADJUSTING
 
     db.commit()
     db.refresh(db_adj)

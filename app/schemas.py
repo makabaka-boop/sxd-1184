@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field
-from .models import BatchStatus
+from .models import BatchStatus, TaskStage, TaskPriority
 
 
 class Token(BaseModel):
@@ -193,3 +193,79 @@ class AnomalyDetectionResult(BaseModel):
     severity: str
     description: str
     related_ids: Optional[List[int]] = None
+
+
+class RdTaskBase(BaseModel):
+    title: str
+    description: Optional[str] = None
+    priority: TaskPriority = TaskPriority.MEDIUM
+    stage: TaskStage = TaskStage.INITIATED
+    ingredient_group_id: Optional[int] = None
+    recipe_id: Optional[int] = None
+    responsible_id: Optional[int] = None
+    target_date: Optional[datetime] = None
+    close_reason: Optional[str] = None
+
+
+class RdTaskCreate(RdTaskBase):
+    batch_ids: Optional[List[int]] = None
+
+
+class RdTaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    priority: Optional[TaskPriority] = None
+    stage: Optional[TaskStage] = None
+    ingredient_group_id: Optional[int] = None
+    recipe_id: Optional[int] = None
+    responsible_id: Optional[int] = None
+    target_date: Optional[datetime] = None
+    close_reason: Optional[str] = None
+
+
+class RdTaskBatchBrief(BaseModel):
+    id: int
+    batch_id: int
+    batch_no: Optional[str] = None
+    batch_status: Optional[BatchStatus] = None
+    round_no: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class RdTaskResponse(RdTaskBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    is_overdue: bool = False
+    ingredient_group: Optional[IngredientGroupResponse] = None
+    recipe: Optional[RecipeResponse] = None
+    responsible_person: Optional[UserResponse] = None
+    task_batches: Optional[List[RdTaskBatchBrief]] = None
+
+    class Config:
+        from_attributes = True
+
+
+class RdTaskDetail(RdTaskResponse):
+    batch_status_transitions: Optional[List[dict]] = None
+    current_round_review_summary: Optional[dict] = None
+    recent_adjustments: Optional[List[AdjustmentResponse]] = None
+    anomaly_alerts: Optional[List[dict]] = None
+
+
+class TaskStatsOverview(BaseModel):
+    total: int
+    pending: int
+    overdue: int
+    by_stage: dict
+    by_priority: dict
+
+
+class ResponsibleLoadItem(BaseModel):
+    responsible_id: int
+    responsible_name: Optional[str] = None
+    total: int
+    pending: int
+    overdue: int

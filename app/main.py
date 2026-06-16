@@ -4,7 +4,7 @@ from .models import Base
 from .database import engine, SessionLocal
 from . import auth
 from .models import User
-from .routers import auth_router, ingredient_groups, recipes, batches, reviews, stats
+from .routers import auth_router, ingredient_groups, recipes, batches, reviews, stats, rd_tasks
 
 Base.metadata.create_all(bind=engine)
 
@@ -28,6 +28,7 @@ app.include_router(recipes.router)
 app.include_router(batches.router)
 app.include_router(reviews.router)
 app.include_router(stats.router)
+app.include_router(rd_tasks.router)
 
 
 @app.on_event("startup")
