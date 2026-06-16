@@ -30,8 +30,8 @@ def submit_review(
     current_round = batch.round_no
 
     if review.is_valid:
-        existing_valid = db.query(models.Review).filter(
-            models.Review.batch_id == review.batch_id,
+        existing_valid = db.query(models.Review).join(models.Batch).filter(
+            models.Batch.recipe_id == batch.recipe_id,
             models.Review.reviewer_id == current_user.id,
             models.Review.round_no == current_round,
             models.Review.is_valid == True
@@ -39,7 +39,7 @@ def submit_review(
         if existing_valid:
             raise HTTPException(
                 status_code=400,
-                detail="您在当前轮次已提交过有效评审，不可重复提交"
+                detail="您在该配方版本当前轮次已提交过有效评审，不可重复提交"
             )
 
     db_review = models.Review(
@@ -86,28 +86,40 @@ def list_reviews(
     limit: int = 100,
     batch_id: Optional[int] = None,
     recipe_id: Optional[int] = None,
+    recipe_version: Optional[str] = None,
+    batch_status: Optional[BatchStatus] = None,
     reviewer_id: Optional[int] = None,
     round_no: Optional[int] = None,
     is_valid: Optional[bool] = None,
     min_score: Optional[float] = None,
     max_score: Optional[float] = None,
+    exclude_terminated: bool = True,
+    exclude_finalized: bool = False,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    query = db.query(models.Review)
+    query = db.query(models.Review).join(models.Batch).join(models.Recipe)
 
     if batch_id:
         query = query.filter(models.Review.batch_id == batch_id)
     if recipe_id:
-        query = query.join(models.Batch).filter(models.Batch.recipe_id == recipe_id)
+        query = query.filter(models.Batch.recipe_id == recipe_id)
+    if recipe_version:
+        query = query.filter(models.Recipe.version == recipe_version)
+    if batch_status:
+        query = query.filter(models.Batch.status == batch_status)
     if reviewer_id:
         query = query.filter(models.Review.reviewer_id == reviewer_id)
     if round_no:
         query = query.filter(models.Review.round_no == round_no)
     if is_valid is not None:
         query = query.filter(models.Review.is_valid == is_valid)
+    if exclude_terminated:
+        query = query.filter(models.Batch.status != BatchStatus.TERMINATED)
+    if exclude_finalized:
+        query = query.filter(models.Batch.status != BatchStatus.FINALIZED)
     if start_date:
         query = query.filter(models.Review.submitted_at >= start_date)
     if end_date:

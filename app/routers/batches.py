@@ -47,9 +47,13 @@ def list_batches(
     limit: int = 100,
     batch_no: Optional[str] = None,
     recipe_id: Optional[int] = None,
+    recipe_name: Optional[str] = None,
+    recipe_version: Optional[str] = None,
     status: Optional[BatchStatus] = None,
     round_no: Optional[int] = None,
     responsible_id: Optional[int] = None,
+    exclude_terminated: bool = True,
+    exclude_finalized: bool = False,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     db: Session = Depends(get_db),
@@ -60,8 +64,18 @@ def list_batches(
         query = query.filter(models.Batch.batch_no.contains(batch_no))
     if recipe_id:
         query = query.filter(models.Batch.recipe_id == recipe_id)
+    if recipe_name or recipe_version:
+        query = query.join(models.Recipe)
+        if recipe_name:
+            query = query.filter(models.Recipe.name.contains(recipe_name))
+        if recipe_version:
+            query = query.filter(models.Recipe.version == recipe_version)
     if status:
         query = query.filter(models.Batch.status == status)
+    if exclude_terminated:
+        query = query.filter(models.Batch.status != BatchStatus.TERMINATED)
+    if exclude_finalized:
+        query = query.filter(models.Batch.status != BatchStatus.FINALIZED)
     if round_no:
         query = query.filter(models.Batch.round_no == round_no)
     if responsible_id:

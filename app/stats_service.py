@@ -15,21 +15,24 @@ def get_defect_distribution(
     recipe_id: Optional[int] = None,
     ingredient_group_id: Optional[int] = None,
     start_date=None,
-    end_date=None
+    end_date=None,
+    exclude_terminated: bool = True
 ) -> List[dict]:
     query = db.query(
         models.Review.defect_reason,
         func.count(models.Review.id).label('count')
-    ).filter(
+    ).join(models.Batch).filter(
         models.Review.is_valid == True,
         models.Review.defect_reason.isnot(None),
         models.Review.defect_reason != ''
     )
 
+    if exclude_terminated:
+        query = query.filter(models.Batch.status != BatchStatus.TERMINATED)
     if recipe_id:
-        query = query.join(models.Batch).filter(models.Batch.recipe_id == recipe_id)
+        query = query.filter(models.Batch.recipe_id == recipe_id)
     if ingredient_group_id:
-        query = query.join(models.Batch).join(models.Recipe).filter(
+        query = query.join(models.Recipe).filter(
             models.Recipe.ingredient_group_id == ingredient_group_id
         )
     if start_date:
@@ -45,19 +48,22 @@ def get_defect_distribution(
 
 
 def get_pending_batches_stats(db: Session) -> dict:
+    pending_statuses = [
+        BatchStatus.PENDING_TRIAL,
+        BatchStatus.PENDING_REVIEW,
+        BatchStatus.REVIEWING,
+        BatchStatus.NEED_ADJUST
+    ]
     total_pending = db.query(models.Batch).filter(
-        models.Batch.status.in_([
-            BatchStatus.PENDING_TRIAL,
-            BatchStatus.PENDING_REVIEW,
-            BatchStatus.REVIEWING,
-            BatchStatus.NEED_ADJUST
-        ])
+        models.Batch.status.in_(pending_statuses)
     ).count()
 
     by_status = {}
     statuses = db.query(
         models.Batch.status,
         func.count(models.Batch.id)
+    ).filter(
+        models.Batch.status.in_(pending_statuses)
     ).group_by(models.Batch.status).all()
     for s, cnt in statuses:
         by_status[s.value] = cnt
@@ -65,7 +71,7 @@ def get_pending_batches_stats(db: Session) -> dict:
     return {"total": total_pending, "by_status": by_status}
 
 
-def get_recipe_stability(db: Session, recipe_id: Optional[int] = None) -> List[dict]:
+def get_recipe_stability(db: Session, recipe_id: Optional[int] = None, exclude_terminated: bool = True) -> List[dict]:
     query = db.query(models.Recipe)
     if recipe_id:
         query = query.filter(models.Recipe.id == recipe_id)
@@ -74,10 +80,13 @@ def get_recipe_stability(db: Session, recipe_id: Optional[int] = None) -> List[d
     result = []
 
     for recipe in recipes:
-        reviews = db.query(models.Review).join(models.Batch).filter(
+        review_query = db.query(models.Review).join(models.Batch).filter(
             models.Batch.recipe_id == recipe.id,
             models.Review.is_valid == True
-        ).all()
+        )
+        if exclude_terminated:
+            review_query = review_query.filter(models.Batch.status != BatchStatus.TERMINATED)
+        reviews = review_query.all()
 
         if not reviews:
             continue
@@ -183,10 +192,10 @@ def detect_missing_next_round(db: Session) -> List[dict]:
     return anomalies
 
 
-def detect_ingredient_group_defects(db: Session, threshold: int = 5) -> List[dict]:
+def detect_ingredient_group_defects(db: Session, threshold: int = 5, exclude_terminated: bool = True) -> List[dict]:
     anomalies = []
 
-    results = db.query(
+    query = db.query(
         models.IngredientGroup.id,
         models.IngredientGroup.name,
         func.count(models.Review.id).label('defect_count')
@@ -201,7 +210,12 @@ def detect_ingredient_group_defects(db: Session, threshold: int = 5) -> List[dic
             models.Review.defect_reason.isnot(None),
             models.Review.defect_reason != ''
         )
-    ).group_by(
+    )
+
+    if exclude_terminated:
+        query = query.filter(models.Batch.status != BatchStatus.TERMINATED)
+
+    results = query.group_by(
         models.IngredientGroup.id
     ).having(
         func.count(models.Review.id) >= threshold

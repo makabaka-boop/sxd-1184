@@ -15,11 +15,12 @@ def get_defect_distribution(
     ingredient_group_id: Optional[int] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    exclude_terminated: bool = True,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_active_user)
 ):
     return stats_service.get_defect_distribution(
-        db, recipe_id, ingredient_group_id, start_date, end_date
+        db, recipe_id, ingredient_group_id, start_date, end_date, exclude_terminated
     )
 
 
@@ -34,10 +35,11 @@ def get_pending_batches_stats(
 @router.get("/recipe-stability")
 def get_recipe_stability(
     recipe_id: Optional[int] = None,
+    exclude_terminated: bool = True,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_active_user)
 ):
-    return stats_service.get_recipe_stability(db, recipe_id)
+    return stats_service.get_recipe_stability(db, recipe_id, exclude_terminated)
 
 
 @router.get("/anomalies")
